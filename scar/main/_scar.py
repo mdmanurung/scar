@@ -177,6 +177,7 @@ class model:
         self,
         raw_count: Union[str, np.ndarray, pd.DataFrame],
         ambient_profile: Optional[Union[str, np.ndarray, pd.DataFrame]] = None,
+        ambient_profile2: Optional[Union[str, np.ndarray, pd.DataFrame]] = None,
         nn_layer1: int = 150,
         nn_layer2: int = 100,
         latent_dim: int = 15,
@@ -273,6 +274,32 @@ class model:
         self.ambient_profile = torch.from_numpy(ambient_profile).float().to(self.device)
         """ambient_profile : np.ndarray, the probability of occurrence of each ambient transcript.
         """
+
+        if isinstance(ambient_profile2, str):
+            ambient_profile2 = pd.read_pickle(ambient_profile2)
+            ambient_profile2 = ambient_profile2.fillna(0).values  # missing vals -> zeros
+        elif isinstance(ambient_profile2, pd.DataFrame):
+            ambient_profile2 = ambient_profile2.fillna(0).values  # missing vals -> zeros
+        elif isinstance(ambient_profile2, np.ndarray):
+            ambient_profile2 = np.nan_to_num(ambient_profile2)  # missing vals -> zeros
+        elif not ambient_profile2:
+            print(" ... Evaluate empty profile from cells")
+            ambient_profile2 = raw_count.sum() / raw_count.sum().sum()
+            ambient_profile2 = ambient_profile2.fillna(0).values
+        else:
+            raise TypeError(
+                f"Expecting str / np.array / None / pd.DataFrame, but get a {type(ambient_profile2)}"
+            )
+
+        if ambient_profile2.squeeze().ndim == 1:
+            ambient_profile2 = (
+                ambient_profile2.squeeze()
+                .reshape(1, -1)
+                .repeat(raw_count.shape[0], axis=0)
+            )
+        self.ambient_profile2 = torch.from_numpy(ambient_profile2).float().to(self.device)
+        """ambient_profile : np.ndarray, the probability of occurrence of each ambient transcript.
+        """
         
         # self.n_batch_train = None
         # self.n_batch_val = None
@@ -357,10 +384,10 @@ class model:
         train_ids, test_ids = train_test_split(list_ids, train_size=train_size)
 
         # Generators
-        training_set = UMIDataset(self.raw_count, self.ambient_profile, train_ids)
+        training_set = UMIDataset(self.raw_count, self.ambient_profile, self.ambient_profile2, train_ids)
         training_generator = torch.utils.data.DataLoader(
             training_set, batch_size=batch_size, shuffle=shuffle)
-        val_set = UMIDataset(self.raw_count, self.ambient_profile, test_ids)
+        val_set = UMIDataset(self.raw_count, self.ambient_profile, self.ambient_profile2, test_ids)
         val_generator = torch.utils.data.DataLoader(
             val_set, batch_size=batch_size, shuffle=shuffle
         )
@@ -423,17 +450,19 @@ class model:
                 train_recon_loss = 0
 
                 vae_nets.train()
-                for x_batch, ambient_freq in training_generator:
+                for x_batch, ambient_freq, ambient_freq2 in training_generator:
 
                     optim.zero_grad()
-                    dec_nr, dec_prob, means, var, dec_dp = vae_nets(x_batch)
+                    dec_nr, dec_nr2, dec_prob, means, var, dec_dp = vae_nets(x_batch)
                     recon_loss_minibatch, kld_loss_minibatch, loss_minibatch = loss_fn(
                         x_batch,
                         dec_nr,
+                        dec_nr2,
                         dec_prob,
                         means,
                         var,
                         ambient_freq,
+                        ambient_freq2,
                         reconstruction_weight=reconstruction_weight,
                         kld_weight=kld_weight,
                         dec_dp=dec_dp,
@@ -470,10 +499,11 @@ class model:
                     val_recon_loss = 0
 
                     vae_nets.eval()
-                    for x_batch_val, ambient_freq_val in val_generator:
+                    for x_batch_val, ambient_freq_val, ambient_freq_val2 in val_generator:
 
                         (
                             dec_nr_val,
+                            dec_nr_val2,
                             dec_prob_val,
                             mu_val,
                             var_val,
@@ -487,10 +517,12 @@ class model:
                         ) = loss_fn(
                             x_batch_val,
                             dec_nr_val,
+                            dec_nr_val2,
                             dec_prob_val,
                             mu_val,
                             var_val,
                             ambient_freq_val,
+                            ambient_freq_val2,
                             reconstruction_weight=reconstruction_weight,
                             kld_weight=kld_weight,
                             dec_dp=dec_dp_val,
@@ -563,7 +595,7 @@ class model:
                 A feature_assignment will be added in 'sgRNA' or 'tag' feature type.       
         """
         print("===========================================\n  Inferring .....")
-        total_set = UMIDataset(self.raw_count, self.ambient_profile)
+        total_set = UMIDataset(self.raw_count, self.ambient_profile, self.ambient_profile2)
         n_features = self.n_features
         sample_size = self.raw_count.shape[0]
         self.native_counts = np.empty([sample_size, n_features])
@@ -671,10 +703,11 @@ class model:
 class UMIDataset(torch.utils.data.Dataset):
     """Characterizes dataset for PyTorch"""
 
-    def __init__(self, raw_count, ambient_profile, list_ids=None):
+    def __init__(self, raw_count, ambient_profile, ambient_profile2, list_ids=None):
         """Initialization"""
         self.raw_count = raw_count
         self.ambient_profile = ambient_profile
+        self.ambient_profile2 = ambient_profile2
         if list_ids:
             self.list_ids = list_ids
         else:
@@ -690,5 +723,6 @@ class UMIDataset(torch.utils.data.Dataset):
         sc_id = self.list_ids[index]
         sc_count = self.raw_count[sc_id, :]
         sc_ambient = self.ambient_profile[sc_id, :]
-        return sc_count, sc_ambient
+        sc_ambient1 = self.ambient_profile2[sc_id, :]
+        return sc_count, sc_ambient, sc_ambient1
       

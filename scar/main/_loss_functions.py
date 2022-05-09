@@ -5,6 +5,7 @@ import torch
 from torch.distributions import Normal, kl_divergence, Binomial, Poisson
 from pyro.distributions.zero_inflated import ZeroInflatedPoisson
 
+
 def kld(means, var):
     """KL divergence"""
     mean = torch.zeros_like(means)
@@ -13,11 +14,13 @@ def kld(means, var):
 
 
 def get_reconstruction_loss(
-    input_matrix, dec_nr, dec_prob, amb_prob, dec_dp, count_model
+    input_matrix, dec_nr, dec_nr2, dec_prob, amb_prob, amb_prob2, dec_dp, count_model
 ):
     """reconstruction loss"""
     tot_count = input_matrix.sum(dim=1).view(-1, 1)
-    prob_tot = dec_prob * (1 - dec_nr) + amb_prob * dec_nr
+    prob_tot = (
+        dec_prob * (2 - dec_nr - dec_nr2) + amb_prob * dec_nr + amb_prob2 * dec_nr2
+    ) / 2
 
     if count_model.lower() == "zeroinflatedpoisson":
         recon_loss = -ZeroInflatedPoisson(
@@ -46,10 +49,12 @@ def get_reconstruction_loss(
 def loss_fn(
     input_matrix,
     dec_nr,
+    dec_nr2,
     dec_prob,
     means,
     var,
     amb_prob,
+    amb_prob2,
     reconstruction_weight,
     kld_weight=1e-5,
     dec_dp=None,
@@ -58,7 +63,14 @@ def loss_fn(
     """loss function"""
 
     recon_loss = get_reconstruction_loss(
-        input_matrix, dec_nr, dec_prob, amb_prob, dec_dp=dec_dp, count_model=count_model
+        input_matrix,
+        dec_nr,
+        dec_nr2,
+        dec_prob,
+        amb_prob,
+        amb_prob2,
+        dec_dp=dec_dp,
+        count_model=count_model,
     )
     kld_loss = kld(means, var).sum()
     total_loss = recon_loss * reconstruction_weight + kld_loss * kld_weight

@@ -90,12 +90,17 @@ class VAE(nn.Module):
     def forward(self, input_matrix):
         """forward function"""
         sampling, means, var = self.encoder(input_matrix)
-        dec_nr, dec_prob, dec_dp = self.decoder(sampling)
-        return dec_nr, dec_prob, means, var, dec_dp
+        dec_nr, dec_nr2, dec_prob, dec_dp = self.decoder(sampling)
+        return dec_nr, dec_nr2, dec_prob, means, var, dec_dp
 
     @torch.no_grad()
     def inference(
-        self, input_matrix, amb_prob, count_model_inf="poisson", adjust="micro"
+        self,
+        input_matrix,
+        amb_prob,
+        amb_prob2,
+        count_model_inf="poisson",
+        adjust="micro",
     ):
         """
         Inference of presence of native signals
@@ -104,17 +109,21 @@ class VAE(nn.Module):
         assert adjust in [False, "global", "micro"]
 
         # Estimate native signals
-        dec_nr, dec_prob, _, _, _ = self.forward(input_matrix)
+        dec_nr, dec_nr2, dec_prob, _, _, _ = self.forward(input_matrix)
 
         # Copy tensor to CPU
         input_matrix_np = input_matrix.cpu().numpy()
         noise_ratio = dec_nr.cpu().numpy().reshape(-1, 1)
+        noise_ratio2 = dec_nr2.cpu().numpy().reshape(-1, 1)
         nat_prob = dec_prob.cpu().numpy()
         amb_prob = amb_prob.cpu().numpy().reshape(1, -1)
+        amb_prob2 = amb_prob2.cpu().numpy().reshape(1, -1)
 
         total_count_per_cell = input_matrix_np.sum(axis=1).reshape(-1, 1)
-        expected_native_counts = total_count_per_cell * (1 - noise_ratio) * nat_prob
-        expected_amb_counts = total_count_per_cell * noise_ratio * amb_prob
+        expected_native_counts = (
+            total_count_per_cell * (1 - noise_ratio - noise_ratio2) * nat_prob
+        )
+        expected_amb_counts = total_count_per_cell * noise_ratio * amb_prob + total_count_per_cell * noise_ratio2 * amb_prob2
         tot_amb = expected_amb_counts.sum(axis=1).reshape(-1, 1)
 
         if not adjust:
@@ -272,6 +281,9 @@ class Decoder(nn.Module):
         dec_nr = self.noise_fc(dec)
         dec_nr = self.noise_activation(dec_nr)
 
+        dec_nr2 = self.noise_fc(dec)
+        dec_nr2 = self.noise_activation(dec_nr2)
+
         # final layers to learn the dropout probability
         if self.count_model.lower() == "zeroinflatedpoisson":
             dec_dp = self.dropoutprob(dec)
@@ -280,4 +292,4 @@ class Decoder(nn.Module):
         else:
             dec_dp = None
 
-        return dec_nr, dec_prob, dec_dp
+        return dec_nr, dec_nr2, dec_prob, dec_dp
